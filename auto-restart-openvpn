@@ -134,12 +134,12 @@ ping_server() {
      else
         if [ ${SIGNAL_CYCLES} -eq ${SOUND_SIGNAL_CYCLES} ]; then
            sound_signal "disconnection"  ${type_ping}
+           SIGNAL_CYCLES=0
            if [ ${type_ping} = "VPN" ]; then
               LAST_STATUS_VPN=${res}
            else
               LAST_STATUS_INT=${res}
            fi
-           SIGNAL_CYCLES=0
         else
            let "SIGNAL_CYCLES=${SIGNAL_CYCLES}+1"
         fi
@@ -149,6 +149,7 @@ ping_server() {
      if [ ${LAST_STATUS} -ne ${res} ]; then
         save_log "Server $PING_SERVER is available"
         sound_signal "connection" ${type_ping}
+        SIGNAL_CYCLES=0
         if [ ${type_ping} = "VPN" ]; then
            LAST_STATUS_VPN=${res}
         else
