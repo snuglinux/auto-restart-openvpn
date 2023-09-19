@@ -1,0 +1,5 @@
+[Unit]
+Description=Startup script auto-restart-openvpn
+
+[Service]
+ExecStart=/usr/bin/auto-restart-openvpn

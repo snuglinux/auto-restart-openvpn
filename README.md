@@ -1,0 +1,2 @@
+# Openvpn automatic reboot script
+

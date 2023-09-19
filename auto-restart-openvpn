@@ -1,0 +1,259 @@
+#! /bin/bash
+
+# v0.0.12
+NAME_HOST="${HOSTNAME%%.*}"
+NAME_SCRIPT=`basename $BASH_SOURCE`
+LOG_PATCH='/var/log/'${NAME_SCRIPT}
+LAST_STATUS_FILE=${LOG_PATCH}'/'${NAME_HOST}'-last-status'
+FILE_CONF=/etc/auto-restart-openvpn.conf
+lang=`echo $LANG | cut -b 1,2`
+
+#=======================================
+save_log(){
+  local var_str=$1
+  echo "$(date +%k:%M:%S): $var_str" >> ${LOG_PATCH}/$(date +%Y.%m.%d)-${NAME_HOST}.log
+  echo "$var_str"
+}
+
+if ! [ -d ${LOG_PATCH} ]; then
+   mkdir ${LOG_PATCH}
+fi
+
+if ! [ -f ${FILE_CONF} ]; then
+   save_log "Configuration file not found ${FILE_CONF}"
+   exit
+fi
+
+source ${FILE_CONF}
+
+# Clearing log files
+if [ -z ${STORE_LOGS_DAYS} ]; then
+   STORE_LOGS_DAYS=30
+fi
+find "$LOG_PATCH" -type f -mtime +$STORE_LOGS_DAYS -print0 | xargs -0 rm -f
+
+#=======================================
+sound_signal(){
+  if [ "$PLAY_SOUND" != "YES" ]; then
+     return
+  fi
+  local type_signal=$1
+  local type_ping=$2
+  if [ "$TYPE_AUDIO_DEVICE"='speaker' ]; then
+     if ! [ -f '/bin/aplay' ]; then
+        save_log "Not file /bin/aplay"
+        save_log "Install package 'alsa-utils'"
+        return
+     fi
+     amixer set Master ${SOUND_LEVEL}% unmute
+     if [ $type_signal = "disconnection" ]; then
+        if [ $type_ping = "VPN" ]; then
+           save_log "Reproduction of a sound: 'No connection to the VPN server'"
+           aplay -D ${DEVICE_NAME} ${SOUND_DIR}/${lang}/no-connection-vpn-server.wav
+        else
+           save_log "Reproduction of a sound: 'No internet connection'"
+           aplay -D ${DEVICE_NAME} ${SOUND_DIR}/${lang}/no-internet-connection.wav
+        fi
+     else
+        if [ $type_ping = "VPN" ]; then
+           save_log "Reproduction of a sound: 'Connection to VPN server established'"
+           aplay -D ${DEVICE_NAME} ${SOUND_DIR}/${lang}/connection-vpn-server-established.wav
+        else
+           save_log "Reproduction of a sound: 'Internet connection installed'"
+           aplay -D ${DEVICE_NAME} ${SOUND_DIR}/${lang}/internet-connection-installed.wav
+        fi
+     fi
+  else
+    if ! [ -f '/bin/beep' ]; then
+       save_log "Not file /bin/beep"
+       return
+    fi
+    if [ $type_signal = "disconnection" ]; then
+       if [ $type_ping = "VPN" ]; then
+          save_log "beep_alarm.sh"
+          beep_alarm.sh
+       else
+          save_log "beep_ring.sh"
+          beep_ring.sh
+       fi
+    else
+       if [ $type_ping = "VPN" ]; then
+          save_log "beep_victory.sh"
+          beep_victory.sh
+       else
+          save_log "beep_mario-victory.sh"
+          beep_mario-victory.sh
+       fi
+    fi
+  fi
+}
+
+#=======================================
+#1 - resultvar
+#2 - type_ping
+ping_server() {
+  #save_log "Checking access to the server $PING_SERVER_VPN"
+  local res=1
+  local resultvar=$1
+  local type_ping=$2
+  local PING_SERVER
+  local LAST_STATUS_VPN
+  local LAST_STATUS_INT
+
+  if [ -f ${LAST_STATUS_FILE} ]; then
+     source ${LAST_STATUS_FILE}
+  fi
+  if [ $type_ping = "VPN" ]; then
+     PING_SERVER=${PING_SERVER_VPN}
+     LAST_STATUS=${LAST_STATUS_VPN}
+  else
+     PING_SERVER=${PING_SERVER_INT}
+     LAST_STATUS=${LAST_STATUS_INT}
+  fi
+  if [ -z ${LAST_STATUS_VPN} ]; then
+     LAST_STATUS=0
+     LAST_STATUS_VPN=0
+  fi
+  if [ -z ${LAST_STATUS_INT} ]; then
+     LAST_STATUS=0
+     LAST_STATUS_INT=0
+  fi
+  if [ -z ${SIGNAL_CYCLES} ]; then
+     SIGNAL_CYCLES=0
+  fi
+  /bin/ping ${PING_SERVER} -c 3 > /dev/null 2>&1 && res=0
+  if [ ${res} -ne 0 ]; then
+     if [ ${LAST_STATUS} -ne ${res} ]; then
+        save_log "Can not access the server $PING_SERVER"
+        sound_signal "disconnection"  ${type_ping}
+        if [ $type_ping = "VPN" ]; then
+           LAST_STATUS_VPN=${res}
+        else
+           LAST_STATUS_INT=${res}
+        fi
+     else
+        if [ ${SIGNAL_CYCLES} -eq ${SOUND_SIGNAL_CYCLES} ]; then
+           sound_signal "disconnection"  ${type_ping}
+           if [ ${type_ping} = "VPN" ]; then
+              LAST_STATUS_VPN=${res}
+           else
+              LAST_STATUS_INT=${res}
+           fi
+           SIGNAL_CYCLES=0
+        else
+           let "SIGNAL_CYCLES=${SIGNAL_CYCLES}+1"
+        fi
+     fi
+     eval ${resultvar}=1
+  else
+     if [ ${LAST_STATUS} -ne ${res} ]; then
+        save_log "Server $PING_SERVER is available"
+        sound_signal "connection" ${type_ping}
+        if [ ${type_ping} = "VPN" ]; then
+           LAST_STATUS_VPN=${res}
+        else
+           LAST_STATUS_INT=${res}
+        fi
+     fi
+     eval ${resultvar}=0
+  fi
+  echo 'LAST_STATUS_VPN="'"${LAST_STATUS_VPN}"'"' > ${LAST_STATUS_FILE}
+  echo 'LAST_STATUS_INT="'"${LAST_STATUS_INT}"'"' >> ${LAST_STATUS_FILE}
+  echo 'SIGNAL_CYCLES="'"${SIGNAL_CYCLES}"'"' >> ${LAST_STATUS_FILE}
+}
+
+# Let's check if systemd is used
+ps -A | grep systemd > /dev/null
+if [ "$?" = 0 ]; then
+  SYSTEMD=1;
+else
+  SYSTEMD=0;
+fi
+
+# Internet check
+ping_server result "INT"
+if [ "$result" = 1 ]; then
+   let "REBOOT=${REBOOT}+1"
+   if [ ${REBOOT} -eq ${REBOOT_AFTER_CYCLES} ]; then
+      beep_fall.sh
+      save_log "System reboot"
+      if [ -n $AUTOMATION_SCRIPT ]; then
+         if [ -f $AUTOMATION_SCRIPT ]; then
+            $AUTOMATION_SCRIPT
+         fi
+      fi
+      reboot
+      exit
+   else
+      echo 'REBOOT="'"${REBOOT}"'"' >> ${LAST_STATUS_FILE}
+      exit
+   fi
+else
+   REBOOT=0
+fi
+
+# Are you using Server or Client?
+if [ "${TYPE}" = "SERVER" ]; then
+   if ls "/etc/openvpn/server" | grep "${NAME_SERVICE}-server.conf" > /dev/null ; then
+      OPENVPN_SERVICE="openvpn-server@${NAME_SERVICE}-server.service"
+   fi
+   if [ -z ${OPENVPN_SERVICE} ]; then
+      save_log "No configuration file found '${NAME_SERVICE}-server.conf'!"
+      exit 1;
+   fi
+   STATUS_VPN=`systemctl status ${OPENVPN_SERVICE} | grep "Active: inactive" `
+   if [ -z "${STATUS_VPN}" ]; then
+      STATUS_VPN=`systemctl status ${OPENVPN_SERVICE} | grep "Active: failed" `
+   fi
+   if [ -n "${STATUS_VPN}" ]; then
+      sound_signal "connection" "VPN"
+      save_log "Restart the service ${OPENVPN_SERVICE}"
+      if [[ "${SYSTEMD}" = "1" ]]; then
+         save_log "Restart the service ${OPENVPN_SERVICE}"
+         systemctl restart "${OPENVPN_SERVICE}";
+      else
+         save_log "Restart the service /sbin/service openvpn restart"
+         /sbin/service openvpn restart
+      fi
+   fi
+else
+   if ls "/etc/openvpn/client" | grep "${NAME_SERVICE}-client.conf" > /dev/null ; then
+      OPENVPN_SERVICE="openvpn-client@${NAME_SERVICE}-client.service"
+   fi
+   if [ -z ${OPENVPN_SERVICE} ]; then
+      save_log "No configuration file found '${NAME_SERVICE}-client.conf'!"
+      exit 1;
+   fi
+   STATUS_VPN=`systemctl status ${OPENVPN_SERVICE} | grep "Active: inactive" `
+   if [ -z "${STATUS_VPN}" ]; then
+      STATUS_VPN=`systemctl status ${OPENVPN_SERVICE} | grep "Active: failed" `
+   fi
+   if [ -n "${STATUS_VPN}" ]; then
+      sound_signal "connection" "VPN"
+      save_log "Restart the service ${OPENVPN_SERVICE}"
+      if [[ "${SYSTEMD}" = "1" ]]; then
+         save_log "Restart the service ${OPENVPN_SERVICE}"
+         systemctl restart "${OPENVPN_SERVICE}";
+      else
+         save_log "Restart the service /sbin/service openvpn restart"
+         /sbin/service openvpn restart
+      fi
+   fi
+   ping_server result "VPN"
+   if [ "${result}" = 1 ]; then
+      let "RESTART_OPENVPN=${RESTART_OPENVPN}+1"
+      if [ ${RESTART_OPENVPN} -eq ${RESTART_OPENVPN_CYCLES} ]; then
+         if [[ "${SYSTEMD}" = "1" ]]; then
+            save_log "Restart the service ${OPENVPN_SERVICE}"
+            systemctl restart "${OPENVPN_SERVICE}";
+         else
+            save_log "Restart the service /sbin/service openvpn restart"
+            /sbin/service openvpn restart
+         fi
+      else
+         echo 'RESTART_OPENVPN="'"${RESTART_OPENVPN}"'"' >> ${LAST_STATUS_FILE}
+      fi
+   else
+     RESTART_OPENVPN=0
+   fi
+fi

@@ -1,0 +1,9 @@
+[Unit]
+Description=Startup script auto-restart-openvpn
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=60s
+
+[Install]
+WantedBy=timers.target
